@@ -3,6 +3,7 @@ package openvex
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	openvex "github.com/openvex/go-vex/pkg/vex"
@@ -756,4 +757,101 @@ func TestFilterMatches_OCIProductWithFullRepositoryURL(t *testing.T) {
 
 	require.Empty(t, remaining.Sorted(), "match should be suppressed by the repository_url-qualified oci product")
 	require.Len(t, ignored, 1)
+}
+
+func TestFilterMatches_MultipleStatementsLatestWins(t *testing.T) {
+	// If the VEX document has mutiple statements for the same CVE, the most recent statement should be used in the filtering.
+	// Tested for both the image-as-product and package-as-product cases.
+	processor := New()
+
+	const pkgPURL = "pkg:apk/alpine/libcrypto3@3.0.8-r3"
+
+	libcrypto := match.Match{
+		Vulnerability: vulnerability.Vulnerability{
+			Reference: vulnerability.Reference{
+				ID: "CVE-2023-1255",
+			},
+		},
+		Package: pkg.Package{
+			PURL: pkgPURL,
+		},
+	}
+
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	packageCtx := &pkg.Context{
+		Source: &source.Description{},
+	}
+	packageProduct := openvex.Product{
+		Component: openvex.Component{ID: pkgPURL},
+	}
+
+	imageCtx := &pkg.Context{
+		Source: &source.Description{
+			Name: "alpine",
+			Metadata: source.ImageMetadata{
+				RepoDigests: []string{
+					"alpine@sha256:124c7d2707904eea7431fffe91522a01e5a861a624ee31d03372cc1d138a3126",
+				},
+			},
+		},
+	}
+	imageProduct := openvex.Product{
+		Component: openvex.Component{ID: "pkg:oci/alpine@sha256%3A124c7d2707904eea7431fffe91522a01e5a861a624ee31d03372cc1d138a3126"},
+		Subcomponents: []openvex.Subcomponent{
+			{Component: openvex.Component{ID: pkgPURL}},
+		},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		pkgCtx        *pkg.Context
+		product       openvex.Product
+		olderStatus   openvex.Status
+		newerStatus   openvex.Status
+		expectIgnored int
+	}{
+		{
+			name:          "image-as-product, later fixed overrides earlier under_investigation",
+			pkgCtx:        imageCtx,
+			product:       imageProduct,
+			olderStatus:   openvex.StatusUnderInvestigation,
+			newerStatus:   openvex.StatusFixed,
+			expectIgnored: 1,
+		},
+		{
+			name:          "package-as-product, later fixed overrides earlier under_investigation",
+			pkgCtx:        packageCtx,
+			product:       packageProduct,
+			olderStatus:   openvex.StatusUnderInvestigation,
+			newerStatus:   openvex.StatusFixed,
+			expectIgnored: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vexDoc := &openvex.VEX{
+				Statements: []openvex.Statement{
+					{
+						Vulnerability: openvex.Vulnerability{Name: "CVE-2023-1255"},
+						Timestamp:     &older,
+						Products:      []openvex.Product{tc.product},
+						Status:        tc.olderStatus,
+					},
+					{
+						Vulnerability: openvex.Vulnerability{Name: "CVE-2023-1255"},
+						Timestamp:     &newer,
+						Products:      []openvex.Product{tc.product},
+						Status:        tc.newerStatus,
+					},
+				},
+			}
+
+			matches := match.NewMatches(libcrypto)
+			remaining, ignored, err := processor.FilterMatches(vexDoc, nil, tc.pkgCtx, &matches, nil)
+			require.NoError(t, err)
+			require.Len(t, ignored, tc.expectIgnored)
+			require.Len(t, remaining.Sorted(), 1-tc.expectIgnored)
+		})
+	}
 }

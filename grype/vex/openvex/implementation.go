@@ -259,13 +259,13 @@ func subcomponentIdentifiersFromMatch(m *match.Match) []string {
 func findMatchingStatement(doc *openvex.VEX, vulnID string, products []string, subcmp []string) (stmt *openvex.Statement, product string, subcomponents []string) {
 	for _, product := range products {
 		if stmts := doc.Matches(vulnID, product, subcmp); len(stmts) != 0 {
-			return &stmts[0], product, subcmp
+			return &stmts[len(stmts)-1], product, subcmp
 		}
 	}
 
 	for _, pkgID := range subcmp {
 		if stmts := doc.Matches(vulnID, pkgID, nil); len(stmts) != 0 {
-			return &stmts[0], pkgID, nil
+			return &stmts[len(stmts)-1], pkgID, nil
 		}
 	}
 
